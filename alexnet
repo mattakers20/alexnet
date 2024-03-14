@@ -1,0 +1,95 @@
+import torch
+import torchvision.transforms as transforms
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.manifold import MDS
+from PIL import Image
+
+
+# Load pre-trained AlexNet model
+model = torch.hub.load('pytorch/vision', 'alexnet', pretrained=True)
+model.eval()
+
+
+# Load images
+images = []
+for i in range(156):
+   filename = f"{i+1:03}.jpg"
+   image = Image.open(filename).convert('RGB')
+   image = transforms.Resize(256)(image)
+   image = transforms.CenterCrop(224)(image)
+   image = transforms.ToTensor()(image)
+   images.append(image)
+
+
+# Extract feature maps/activations
+layer_names = ['features.0', 'features.3', 'features.6', 'features.8', 'features.10']
+activations = {layer_name: [] for layer_name in layer_names}
+with torch.no_grad():
+   for image in images:
+       output = model(image.unsqueeze(0))
+       for layer_name in layer_names:
+           layer = dict(model.named_modules())[layer_name]
+           if isinstance(layer, torch.nn.Conv2d):
+               layer_activations = layer.weight.data.numpy()
+               n, _, h, w = layer_activations.shape
+               layer_activations = layer_activations.reshape(n, -1)  # flatten the tensor
+               activations[layer_name].append(layer_activations)
+
+
+# Concatenate activations
+activations = {layer_name: np.concatenate(layer_activations_list, axis=0) for layer_name, layer_activations_list in activations.items()}
+
+
+# Compute RDM
+RDM = np.zeros((156, 156))
+for i in range(156):
+   for j in range(156):
+       if i == j:
+           RDM[i][j] = 0
+       else:
+           activation_i = np.concatenate([activations[layer_name][i] for layer_name in layer_names])
+           activation_j = np.concatenate([activations[layer_name][j] for layer_name in layer_names])
+           RDM[i][j] = np.linalg.norm(activation_i - activation_j)
+
+
+# Define class labels
+class_labels = ['Animals']*28 + ['Objects']*36 + ['Scenes']*36 + ['Human activities']*24 + ['Faces']*32
+
+
+# Loop over each layer
+for layer_name in layer_names:
+   # Get RDM for layer
+   layer_RDM = np.zeros((156, 156))
+   for i in range(156):
+       for j in range(156):
+           if i == j:
+               layer_RDM[i][j] = 0
+           else:
+               activation_i = activations[layer_name][i]
+               activation_j = activations[layer_name][j]
+               layer_RDM[i][j] = np.linalg.norm(activation_i - activation_j)
+
+
+   # Perform MDS on RDM
+   mds = MDS(n_components=2, dissimilarity='precomputed')
+   layer_MDS = mds.fit_transform(layer_RDM)
+
+
+   # Plot MDS
+   fig, ax = plt.subplots()
+   for class_name in set(class_labels):
+       indices = [i for i, x in enumerate(class_labels) if x == class_name]
+       ax.scatter(layer_MDS[indices, 0], layer_MDS[indices, 1], label=class_name)
+   ax.legend()
+   ax.set_title(layer_name)
+   plt.show()
+
+
+   # Plot RDM
+   fig, ax = plt.subplots()
+   im = ax.imshow(layer_RDM)
+   plt.colorbar(im)
+   ax.set_title(layer_name)
+   plt.show()
+
